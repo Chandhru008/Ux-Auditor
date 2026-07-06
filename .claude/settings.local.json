@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(mkdir \"C:\\\\Users\\\\Aashika\\\\OneDrive\\\\Desktop\\\\Cicada_cypher\\\\shared\" 2>$null)",
+      "Bash(npm run *)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":5000\")"
+    ]
+  }
+}

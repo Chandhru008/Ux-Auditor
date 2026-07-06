@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:5000/api/health)",
+      "Bash(findstr \":5173\\\\|:3002\\\\|:3000\")"
+    ]
+  }
+}
