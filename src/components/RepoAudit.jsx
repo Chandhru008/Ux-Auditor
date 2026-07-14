@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 
 const STEPS = [
   'Fetching repository files',
@@ -120,9 +121,9 @@ function ScoreRing({ score, grade }) {
   );
 }
 
-export default function RepoAudit({ audit, setAudit, githubToken: propToken = '' }) {
+export default function RepoAudit({ audit, setAudit, isTokenConnected = false, onOpenGithubModal }) {
+  const { getToken } = useAuth();
   const [repoUrl, setRepoUrl] = useState(() => new URLSearchParams(window.location.search).get('repo') || '');
-  const githubToken = propToken || new URLSearchParams(window.location.search).get('token') || '';
   const [loading, setLoading] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [error, setError] = useState(null);
@@ -266,12 +267,17 @@ export default function RepoAudit({ audit, setAudit, githubToken: propToken = ''
     }, 2500);
 
     try {
+      const token = await getToken();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const response = await fetch('/api/repo/audit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           repoUrl: repoUrl.trim(),
-          githubToken: githubToken.trim() || undefined,
         }),
       });
 
@@ -320,8 +326,12 @@ export default function RepoAudit({ audit, setAudit, githubToken: propToken = ''
                 placeholder="https://github.com/user/repo"
               />
             </div>
-            {githubToken && (
-              <div style={{ fontSize: '11.5px', color: 'var(--green)', marginTop: '6px' }}>✓ GitHub token loaded from settings</div>
+            {isTokenConnected ? (
+              <div style={{ fontSize: '11.5px', color: 'var(--green)', marginTop: '6px' }}>✓ GitHub account connected</div>
+            ) : (
+              <div style={{ fontSize: '11.5px', color: 'var(--orange)', marginTop: '6px' }}>
+                ⚠ GitHub not connected. Private repos will fail. <button type="button" onClick={onOpenGithubModal} style={{ background: 'none', border: 'none', color: 'var(--blue)', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>Connect now</button>
+              </div>
             )}
           </div>
 

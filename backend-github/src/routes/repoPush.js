@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { runFullPushFlow } from '../modules/githubPusher.js';
 import { createClerkClient, verifyToken } from '@clerk/backend';
+import GithubToken from '../models/GithubToken.js';
+import { decryptToken } from '../utils/encryption.js';
 
 const router = Router();
 
@@ -43,11 +45,23 @@ router.post('/push', async (req, res) => {
       }
     }
 
-    // 3. Resolve the GitHub Token (prefer Manual Input -> Clerk OAuth -> Server Default)
-    const githubToken = req.body.githubToken || clerkOauthToken || process.env.GITHUB_TOKEN;
+    // 3. Resolve the GitHub Token (prefer DB -> Clerk OAuth -> Server Default)
+    let dbToken = null;
+    if (userId) {
+      const tokenDoc = await GithubToken.findOne({ userId });
+      if (tokenDoc) {
+        try {
+          dbToken = decryptToken(tokenDoc.encryptedToken);
+        } catch (err) {
+          console.warn('Failed to decrypt stored token:', err.message);
+        }
+      }
+    }
+    
+    const githubToken = dbToken || clerkOauthToken || process.env.GITHUB_TOKEN;
     
     if (!githubToken) {
-      throw new Error('Please provide a GitHub Personal Access Token or connect your GitHub account via Clerk.');
+      throw new Error('Please connect your GitHub account by providing a Personal Access Token.');
     }
 
     const result = await runFullPushFlow(auditId, acceptedFixIds, githubToken);

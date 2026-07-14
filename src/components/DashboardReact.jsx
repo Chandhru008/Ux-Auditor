@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UserButton, useUser, useClerk } from '@clerk/clerk-react';
+import { UserButton, useUser, useClerk, useAuth } from '@clerk/clerk-react';
 import RepoAudit from './RepoAudit';
 import PushToGitHub from './PushToGitHub';
+import GithubTokenModal from './GithubTokenModal';
 import { fetchAudit as fetchCicaadaAudit } from '../services/cicaadaApi';
 import './Dashboard.css';
 
@@ -318,8 +319,8 @@ const WhiteboxHeuristicsView = ({ issues }) => {
   );
 };
 
-const WhiteboxAIFixesView = ({ issues, auditId, isGithub, githubToken = '' }) => {
-  const fixedIssues = issues.filter(i => i.fix && i.fix.fixedCode);
+const WhiteboxAIFixesView = ({ issues, auditId, isGithub, isTokenConnected, onOpenGithubModal }) => {
+  const fixedIssues = issues.filter(i => i.fix && i.fix.fixedCode && i.fix.fixedCode !== i.code);
   
   if (fixedIssues.length === 0) {
     return <div style={{ padding: '24px', color: 'var(--text-secondary)' }}>No AI fixes generated for these issues yet. (Groq API might be disabled or still processing).</div>;
@@ -343,7 +344,8 @@ const WhiteboxAIFixesView = ({ issues, auditId, isGithub, githubToken = '' }) =>
             auditId={auditId}
             acceptedFixIds={issues.map((i, idx) => i.fix && i.fix.fixedCode ? idx : -1).filter(idx => idx !== -1)}
             fixSummary={fixedIssues}
-            githubToken={githubToken}
+            isTokenConnected={isTokenConnected}
+            onOpenGithubModal={onOpenGithubModal}
           />
         </div>
       )}
@@ -370,7 +372,18 @@ const WhiteboxAIFixesView = ({ issues, auditId, isGithub, githubToken = '' }) =>
                 <pre style={{ margin: 0, padding: '16px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)', fontSize: '12.5px', whiteSpace: 'pre-wrap', overflowX: 'auto', lineHeight: '1.6', minHeight: '120px' }}>
                   {issue.code}
                 </pre>
-                <button className="copy-btn" style={{ position: 'absolute', top: '10px', right: '10px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '11px', padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', transition: '0.2s', fontWeight: '600' }}>Copy</button>
+                <button 
+                  className="copy-btn" 
+                  style={{ position: 'absolute', top: '10px', right: '10px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '11px', padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', transition: '0.2s', fontWeight: '600' }}
+                  onClick={(e) => {
+                    navigator.clipboard.writeText(issue.code);
+                    const btn = e.target;
+                    btn.innerText = 'Copied!';
+                    setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+                  }}
+                >
+                  Copy
+                </button>
               </div>
             </div>
             
@@ -383,7 +396,18 @@ const WhiteboxAIFixesView = ({ issues, auditId, isGithub, githubToken = '' }) =>
                 <pre style={{ margin: 0, padding: '16px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)', fontSize: '12.5px', whiteSpace: 'pre-wrap', overflowX: 'auto', lineHeight: '1.6', minHeight: '120px' }}>
                   {issue.fix.fixedCode}
                 </pre>
-                <button className="copy-btn" style={{ position: 'absolute', top: '10px', right: '10px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '11px', padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', transition: '0.2s', fontWeight: '600' }}>Copy</button>
+                <button 
+                  className="copy-btn" 
+                  style={{ position: 'absolute', top: '10px', right: '10px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '11px', padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', transition: '0.2s', fontWeight: '600' }}
+                  onClick={(e) => {
+                    navigator.clipboard.writeText(issue.fix.fixedCode);
+                    const btn = e.target;
+                    btn.innerText = 'Copied!';
+                    setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+                  }}
+                >
+                  Copy
+                </button>
               </div>
             </div>
           </div>
@@ -486,6 +510,7 @@ const VisualCapture = ({ assets, getAssetUrl }) => {
 const DashboardReact = () => {
   const { user } = useUser();
   const { signOut } = useClerk();
+  const { getToken } = useAuth();
   
   const [activePage, setActivePage] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -510,14 +535,39 @@ const DashboardReact = () => {
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
-  const [githubToken, setGithubToken] = useState(() => localStorage.getItem('gh_token') || '');
-  const [showToken, setShowToken] = useState(false);
+  const [isTokenConnected, setIsTokenConnected] = useState(false);
+  const [showGithubModal, setShowGithubModal] = useState(false);
 
-  function saveGithubToken(val) {
-    setGithubToken(val);
-    if (val) localStorage.setItem('gh_token', val);
-    else localStorage.removeItem('gh_token');
-  }
+  useEffect(() => {
+    const fetchTokenStatus = async () => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const res = await fetch('http://localhost:5000/api/github-token/status', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (data.success) setIsTokenConnected(data.isConnected);
+      } catch (err) {
+        console.error('Failed to check token status', err);
+      }
+    };
+    fetchTokenStatus();
+  }, [getToken]);
+
+  const handleDisconnectGithub = async () => {
+    try {
+      const token = await getToken();
+      await fetch('http://localhost:5000/api/github-token', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setIsTokenConnected(false);
+      showToast('GitHub disconnected');
+    } catch (err) {
+      console.error(err);
+    }
+  };
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -709,6 +759,7 @@ const DashboardReact = () => {
   }, [activePage, whiteboxAudit]);
 
 return (
+    <>
     <div className="dashboard-page-container" style={{ height: '100vh', overflow: 'hidden', display: 'flex' }}>
       {/* ══ SIDEBAR ══ */}
 <aside id="sidebar">
@@ -737,12 +788,12 @@ return (
     <div className={`sb-item ${activePage === 'accessibility' ? 'active' : ''}`} data-page="accessibility" onClick={() => setActivePage('accessibility')}>
       <svg className="sb-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="5" r="1"/><path strokeLinecap="round" strokeLinejoin="round" d="M3 9l4 1 5-1 5 1 4-1m-9 3v8m-3-5l3 5 3-5"/></svg>
       Accessibility
-      <span className="sb-badge">14</span>
+      <span className="sb-badge">{whiteboxAudit ? whiteboxAudit.wcagIssues : 14}</span>
     </div>
     <div className={`sb-item ${activePage === 'heuristics' ? 'active' : ''}`} data-page="heuristics" onClick={() => setActivePage('heuristics')}>
       <svg className="sb-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
       UX Heuristics
-      <span className="sb-badge warn">7</span>
+      <span className="sb-badge warn">{whiteboxAudit ? whiteboxAudit.heuristicIssues : 7}</span>
     </div>
     <div className={`sb-item ${activePage === 'journey' ? 'active' : ''}`} data-page="journey" onClick={() => setActivePage('journey')}>
       <svg className="sb-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
@@ -768,25 +819,31 @@ return (
   <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border-light)', marginTop: 'auto' }}>
     <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
       <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-      GitHub Token
+      GitHub Connection
     </div>
-    <div style={{ position: 'relative' }}>
-      <input
-        type={showToken ? 'text' : 'password'}
-        value={githubToken}
-        onChange={(e) => saveGithubToken(e.target.value)}
-        placeholder="ghp_..."
-        style={{ width: '100%', padding: '7px 32px 7px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: '12px', fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }}
-      />
-      <button onClick={() => setShowToken(v => !v)} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, lineHeight: 1 }}>
-        {showToken
-          ? <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-          : <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        }
-      </button>
-    </div>
-    <div style={{ fontSize: '10.5px', color: githubToken ? 'var(--green)' : 'var(--text-muted)', marginTop: '5px' }}>
-      {githubToken ? '✓ Token saved — used for audits & push' : 'Required for private repos & pushing fixes'}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ fontSize: '12px', color: isTokenConnected ? 'var(--green)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        {isTokenConnected ? (
+          <><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--green)' }}></span> Connected</>
+        ) : (
+          <><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--orange)' }}></span> Disconnected</>
+        )}
+      </div>
+      {isTokenConnected ? (
+        <button 
+          onClick={handleDisconnectGithub}
+          style={{ width: '100%', padding: '6px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--red)', fontSize: '12px', cursor: 'pointer', transition: '0.2s', fontWeight: '500' }}
+        >
+          Disconnect
+        </button>
+      ) : (
+        <button 
+          onClick={() => setShowGithubModal(true)}
+          style={{ width: '100%', padding: '6px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--blue)', background: 'var(--blue)', color: '#fff', fontSize: '12px', cursor: 'pointer', transition: '0.2s', fontWeight: '500' }}
+        >
+          Connect GitHub
+        </button>
+      )}
     </div>
   </div>
 
@@ -852,7 +909,7 @@ return (
     {/* ════════════ PAGE: DASHBOARD ════════════ */}
     <div id="page-dashboard" className="page" style={{ display: activePage === 'dashboard' ? 'block' : 'none' }}>
       {new URLSearchParams(window.location.search).get('repo') && !new URLSearchParams(window.location.search).get('auditId') ? (
-        <RepoAudit audit={whiteboxAudit} setAudit={setWhiteboxAudit} githubToken={githubToken} />
+        <RepoAudit audit={whiteboxAudit} setAudit={setWhiteboxAudit} isTokenConnected={isTokenConnected} onOpenGithubModal={() => setShowGithubModal(true)} />
       ) : (
         <>
           {/* AUDIT HERO */}
@@ -990,15 +1047,30 @@ return (
         <div className="card">
           <div className="section-h"><div className="section-title">Quick Actions</div></div>
           <div style={{"display":"flex","flexDirection":"column","gap":"10px","marginBottom":"20px"}}>
-            <button className="btn btn-primary" onClick={() => { /* switchPage('reports',document.querySelector('[data-page=reports]')) */ }}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>View Full Report</button>
-            <button className="btn btn-secondary" onClick={() => showToast('PDF download started…')}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Download PDF</button>
-            <button className="btn btn-secondary" onClick={() => showToast('Exporting JSON…')}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>Export JSON</button>
-            <button className="btn btn-secondary" onClick={() => showToast('Share link copied!')}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Share Report</button>
+            <button className="btn btn-primary" onClick={() => setActivePage('reports')}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>View Full Report</button>
+            <button className="btn btn-secondary" onClick={() => { showToast('Preparing PDF...'); window.print(); }}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Download PDF</button>
+            <button className="btn btn-secondary" onClick={() => {
+              const data = JSON.stringify(whiteboxAudit || { audit: "placeholder" }, null, 2);
+              const blob = new Blob([data], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'ux-auditor-report.json';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              showToast('JSON Exported Successfully');
+            }}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>Export JSON</button>
+            <button className="btn btn-secondary" onClick={() => {
+              navigator.clipboard.writeText(window.location.href);
+              showToast('Share link copied to clipboard!');
+            }}><svg style={{"width":"15px","height":"15px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Share Report</button>
           </div>
           <div style={{"background":"linear-gradient(135deg,#eff6ff,#f5f3ff)","border":"1px solid var(--blue-mid)","borderRadius":"var(--radius)","padding":"14px"}}>
             <div style={{"fontSize":"13px","fontWeight":"700","color":"var(--text-primary)","marginBottom":"4px"}}>🤖 AI Summary</div>
             <div style={{"fontSize":"12.5px","color":"var(--text-secondary)","lineHeight":"1.6"}}>Your site scores <strong>B+</strong>. The most critical issues are missing image alt texts and color contrast failures. Fixing the 5 critical issues alone would raise your score to <strong>A−</strong>.</div>
-            <button className="btn btn-primary btn-sm" style={{"marginTop":"10px"}} onClick={() => { /* switchPage('chat',document.querySelector('[data-page=chat]')) */ }}>Ask AI Assistant →</button>
+            <button className="btn btn-primary btn-sm" style={{"marginTop":"10px"}} onClick={() => setActivePage('chat')}>Ask AI Assistant →</button>
           </div>
         </div>
       </div>
@@ -1545,7 +1617,8 @@ return (
           issues={whiteboxAudit.issues || []}
           auditId={whiteboxAudit._id}
           isGithub={!!whiteboxAudit.owner || (whiteboxAudit.repoUrl && whiteboxAudit.repoUrl.includes('github.com'))}
-          githubToken={githubToken}
+          isTokenConnected={isTokenConnected}
+          onOpenGithubModal={() => setShowGithubModal(true)}
         />
       ) : (
         <>
@@ -1758,11 +1831,39 @@ return (
           <div style={{"fontSize":"13px","color":"var(--text-muted)"}}>Professional consulting document · {whiteboxAudit ? new Date().toLocaleDateString() : 'June 27, 2026'}</div>
         </div>
         <div style={{"display":"flex","gap":"8px","flexWrap":"wrap"}}>
-          <button className="btn btn-primary btn-sm" onClick={() => showToast('PDF downloading…')}><svg style={{"width":"14px","height":"14px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>PDF</button>
-          <button className="btn btn-secondary btn-sm" onClick={() => showToast('HTML downloading…')}>HTML</button>
-          <button className="btn btn-secondary btn-sm" onClick={() => showToast('JSON downloading…')}>JSON</button>
-          <button className="btn btn-secondary btn-sm" onClick={() => { /* window.print() */ }}>Print</button>
-          <button className="btn btn-secondary btn-sm" onClick={() => showToast('Share link copied!')}>Share</button>
+          <button className="btn btn-primary btn-sm" onClick={() => { showToast('Preparing PDF...'); window.print(); }}><svg style={{"width":"14px","height":"14px"}} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>PDF</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => {
+            const el = document.querySelector('.report-doc');
+            const html = `<html><head><title>Audit Report</title><style>body{font-family:sans-serif;padding:20px;}</style></head><body>${el ? el.innerHTML : ''}</body></html>`;
+            const blob = new Blob([html], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ux-auditor-report.html';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast('HTML Exported Successfully');
+          }}>HTML</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => {
+            const data = JSON.stringify(whiteboxAudit || { audit: "placeholder" }, null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ux-auditor-report.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast('JSON Exported Successfully');
+          }}>JSON</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => window.print()}>Print</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => {
+            navigator.clipboard.writeText(window.location.href);
+            showToast('Share link copied to clipboard!');
+          }}>Share</button>
         </div>
       </div>
 
@@ -1945,7 +2046,7 @@ return (
     </div>{/* /chat */}
     
     {/* ════════════ ATOMS AI WIDGET ════════════ */}
-    <atoms-widget assistant-id="6a4084de7e9da2828cb69f1c"></atoms-widget>
+    <atoms-widget style={{ position: 'fixed', bottom: 0, right: 0, zIndex: 9999 }} assistant-id="6a4084de7e9da2828cb69f1c"></atoms-widget>
     
   </div>{/* /content */}
 </div>{/* /main */}
@@ -1953,6 +2054,16 @@ return (
 {/* TOAST */}
 <div id="toast" style={{"position":"fixed","bottom":"90px","right":"28px","background":"#0f172a","color":"#fff","padding":"10px 18px","borderRadius":"10px","fontSize":"13px","fontWeight":"500","transition":"all .3s ease","zIndex":"2000","pointerEvents":"none", "opacity": toastMessage ? "1" : "0", "transform": toastMessage ? "translateY(0)" : "translateY(8px)"}}>{toastMessage}</div>
     </div>
+    
+    <GithubTokenModal 
+      isOpen={showGithubModal} 
+      onClose={() => setShowGithubModal(false)} 
+      onSuccess={() => {
+        setIsTokenConnected(true);
+        showToast('GitHub connected successfully');
+      }} 
+    />
+    </>
   );
 };
 

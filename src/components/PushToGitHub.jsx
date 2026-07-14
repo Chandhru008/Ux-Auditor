@@ -8,7 +8,7 @@ const PUSH_STEPS = [
   { label: 'Opening Pull Request', icon: '🔀' },
 ];
 
-export default function PushToGitHub({ auditId, acceptedFixIds = [], fixSummary = [], githubToken = '' }) {
+export default function PushToGitHub({ auditId, acceptedFixIds = [], fixSummary = [], isTokenConnected = false, onOpenGithubModal }) {
   const { getToken } = useAuth();
   const [status, setStatus] = useState('idle'); // idle | pushing | success | error
   const [currentStep, setCurrentStep] = useState(0);
@@ -19,6 +19,11 @@ export default function PushToGitHub({ auditId, acceptedFixIds = [], fixSummary 
     if (!auditId || acceptedFixIds.length === 0) {
       setError('No accepted fixes to push.');
       setStatus('error');
+      return;
+    }
+
+    if (!isTokenConnected) {
+      if (onOpenGithubModal) onOpenGithubModal();
       return;
     }
 
@@ -45,7 +50,7 @@ export default function PushToGitHub({ auditId, acceptedFixIds = [], fixSummary 
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ auditId, acceptedFixIds, githubToken }),
+        body: JSON.stringify({ auditId, acceptedFixIds }),
       });
 
       const data = await response.json();
@@ -133,10 +138,10 @@ export default function PushToGitHub({ auditId, acceptedFixIds = [], fixSummary 
         )}
 
         {/* Token status */}
-        <div style={{ marginBottom: '16px', fontSize: '12px', color: githubToken ? 'var(--green)' : 'var(--orange)' }}>
-          {githubToken
-            ? '✓ GitHub token loaded from sidebar settings'
-            : '⚠ No GitHub token set — add one in the sidebar to push fixes'}
+        <div style={{ marginBottom: '16px', fontSize: '12px', color: isTokenConnected ? 'var(--green)' : 'var(--orange)' }}>
+          {isTokenConnected
+            ? '✓ GitHub account connected'
+            : '⚠ GitHub not connected — click below to connect and push fixes'}
         </div>
 
         <button

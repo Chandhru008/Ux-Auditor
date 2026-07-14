@@ -6,6 +6,11 @@ import { runWcagChecks } from '../modules/wcagChecker.js';
 import { runHeuristicChecks } from '../modules/heuristicChecker.js';
 import { calculateScore } from '../modules/scorer.js';
 import { generateFixesBatch } from '../modules/fixGenerator.js';
+import { createClerkClient, verifyToken } from '@clerk/backend';
+import GithubToken from '../models/GithubToken.js';
+import { decryptToken } from '../utils/encryption.js';
+
+const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 
 const router = Router();
 
@@ -25,10 +30,29 @@ function normalizeIssue(issue) {
 }
 
 router.post('/audit', async (req, res) => {
-  const { repoUrl, githubToken } = req.body;
+  const { repoUrl } = req.body;
 
   if (!repoUrl) {
     return res.status(400).json({ error: 'repoUrl is required' });
+  }
+
+  let githubToken = undefined;
+
+  // Check if a Clerk token is provided
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const clerkToken = authHeader.split(' ')[1];
+    try {
+      const payload = await verifyToken(clerkToken, { secretKey: process.env.CLERK_SECRET_KEY });
+      const userId = payload.sub;
+      const record = await GithubToken.findOne({ userId });
+      if (record) {
+        githubToken = decryptToken(record.encryptedToken);
+      }
+    } catch (err) {
+      console.error('Clerk token verification failed in repoAudit:', err.message);
+      // We don't fail immediately because public repos can be audited without a token
+    }
   }
 
   const audit = new RepoAudit({
