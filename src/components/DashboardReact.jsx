@@ -3,7 +3,9 @@ import { UserButton, useUser, useClerk, useAuth } from '@clerk/clerk-react';
 import RepoAudit from './RepoAudit';
 import PushToGitHub from './PushToGitHub';
 import GithubTokenModal from './GithubTokenModal';
-import { fetchAudit as fetchCicaadaAudit } from '../services/cicaadaApi';
+import LanguageComparison from './LanguageComparison';
+import MultilingualPromptModal from './MultilingualPromptModal';
+import { fetchAudit as fetchCicaadaAudit, fetchMultilingualAudit, startMultilingualAudit } from '../services/cicaadaApi';
 import './Dashboard.css';
 
 const WhiteboxIssuesView = ({ issues, type, title }) => {
@@ -570,47 +572,148 @@ const DashboardReact = () => {
   };
   const messagesEndRef = useRef(null);
 
+  const [selectedLang, setSelectedLang] = useState('en');
+  const [multilingualAudits, setMultilingualAudits] = useState({});
+  const [comparisonData, setComparisonData] = useState({});
+  const [detectedLanguages, setDetectedLanguages] = useState([]);
+  const [showMultilingualPrompt, setShowMultilingualPrompt] = useState(false);
+  const [currentAuditId, setCurrentAuditId] = useState(null);
+
+  const adaptCicaadaReport = (report) => {
+    if (!report || !report.url) return null;
+    return {
+      status: 'completed',
+      repoUrl: report.url,
+      language: report.language || 'en',
+      languageLabel: report.languageLabel || 'English',
+      parentAuditId: report.parentAuditId || null,
+      score: report.scores?.overall || 85,
+      grade: report.scores?.grade || 'B',
+      wcagScore: report.scores?.wcag || 0,
+      heuristicScore: report.scores?.heuristic || 0,
+      totalIssues: report.issues?.length || 0,
+      wcagIssues: report.issues?.filter(i => i.category === 'wcag').length || 0,
+      heuristicIssues: report.issues?.filter(i => i.category === 'heuristic').length || 0,
+      assets: report.assets,
+      branch: report.languageLabel || 'live',
+      totalFiles: 1,
+      issues: (report.issues || []).map((i, idx) => ({
+        id: idx,
+        type: i.category === 'wcag' ? 'WCAG' : 'HEURISTIC',
+        file: i.selector || 'DOM Element',
+        line: 1,
+        message: i.title,
+        severity: (i.severity || i.priority || 'MEDIUM').toUpperCase(),
+        ruleId: i.rule || i.category,
+        ruleName: i.title,
+        code: i.originalCode || i.selector || 'No snippet',
+        screenshot: i.screenshot,
+        fix: {
+          whyItMatters: i.description || i.explanation,
+          fixedCode: i.fixedCode,
+          timeToFix: i.estimatedFixTime || '5m'
+        }
+      }))
+    };
+  };
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const auditId = params.get('auditId');
     if (auditId && !whiteboxAudit) {
+      setCurrentAuditId(auditId);
       fetchCicaadaAudit(auditId)
         .then(report => {
           if (!report || !report.url) return;
-          const adapted = {
-            status: 'completed',
-            repoUrl: report.url,
-            score: report.scores?.overall || 85,
-            grade: report.scores?.grade || 'B',
-            totalIssues: report.issues?.length || 0,
-            wcagIssues: report.issues?.filter(i => i.category === 'wcag').length || 0,
-            heuristicIssues: report.issues?.filter(i => i.category === 'heuristic').length || 0,
-            assets: report.assets,
-            branch: 'live',
-            totalFiles: 1,
-            issues: (report.issues || []).map((i, idx) => ({
-              id: idx,
-              type: i.category === 'wcag' ? 'WCAG' : 'HEURISTIC',
-              file: i.selector || 'DOM Element',
-              line: 1,
-              message: i.title,
-              severity: (i.severity || i.priority || 'MEDIUM').toUpperCase(),
-              ruleId: i.rule || i.category,
-              ruleName: i.title,
-              code: i.originalCode || i.selector || 'No snippet',
-              screenshot: i.screenshot,
-              fix: {
-                whyItMatters: i.description || i.explanation,
-                fixedCode: i.fixedCode,
-                timeToFix: i.estimatedFixTime || '5m'
-              }
-            }))
-          };
+          const adapted = adaptCicaadaReport(report);
           setWhiteboxAudit(adapted);
+          setMultilingualAudits(prev => ({ ...prev, [report.language || 'en']: adapted }));
+
+          const detected = (report.detectedLanguages || report.pageData?.detectedLanguages || [])
+            .filter(d => d.lang && d.lang !== 'en');
+          setDetectedLanguages(detected);
+
+          // Fetch sibling multilingual audits & comparison table
+          const loadMultilingualState = () => fetchMultilingualAudit(auditId)
+            .then(res => {
+              if (res.comparison) {
+                setComparisonData(res.comparison);
+              }
+              if (res.languages) {
+                const childMap = {};
+                for (const [lang, doc] of Object.entries(res.languages)) {
+                  childMap[lang] = adaptCicaadaReport(doc);
+                }
+                setMultilingualAudits(prev => ({ ...prev, ...childMap }));
+              }
+              return res;
+            });
+
+          loadMultilingualState()
+            .catch(() => {});
+
+          const multilingualPoll = setInterval(async () => {
+            try {
+              const res = await loadMultilingualState();
+              const hasRunningAudit = Object.values(res.comparison || {})
+                .some(item => item.status === 'running');
+              if (!hasRunningAudit) clearInterval(multilingualPoll);
+            } catch (_) {
+              // Keep polling while the child report is being created.
+            }
+          }, 2000);
+
+          window.setTimeout(() => clearInterval(multilingualPoll), 15 * 60 * 1000);
+          return () => clearInterval(multilingualPoll);
         })
         .catch(err => console.error("Error fetching audit:", err));
     }
   }, [whiteboxAudit]);
+
+  const handleSwitchLanguage = (lang) => {
+    setSelectedLang(lang);
+    if (multilingualAudits[lang]) {
+      setWhiteboxAudit(multilingualAudits[lang]);
+      showToast(`Switched to ${multilingualAudits[lang].languageLabel || lang.toUpperCase()} report`);
+    } else {
+      handleAuditSingleLanguage(lang);
+    }
+  };
+
+  const handleAuditSingleLanguage = async (lang) => {
+    if (!currentAuditId) return;
+    showToast(`Starting audit for ${lang.toUpperCase()}...`);
+    try {
+      await startMultilingualAudit(currentAuditId, [lang]);
+      setComparisonData(prev => ({
+        ...prev,
+        [lang]: { ...(prev[lang] || {}), status: 'running', lang }
+      }));
+      showToast(`Auditing ${lang.toUpperCase()} in progress...`);
+      
+      // Check for completion after a short interval
+      const pollInterval = setInterval(async () => {
+        try {
+          const res = await fetchMultilingualAudit(currentAuditId);
+          if (res.comparison) setComparisonData(res.comparison);
+          if (res.languages?.[lang] && res.languages[lang].status === 'completed') {
+            clearInterval(pollInterval);
+            const childAdapted = adaptCicaadaReport(res.languages[lang]);
+            setMultilingualAudits(prev => ({ ...prev, [lang]: childAdapted }));
+            setWhiteboxAudit(childAdapted);
+            setSelectedLang(lang);
+            showToast(`${childAdapted.languageLabel || lang.toUpperCase()} audit complete!`);
+          }
+        } catch (_) {}
+      }, 4000);
+
+      // Timeout interval after 60s
+      setTimeout(() => clearInterval(pollInterval), 60000);
+    } catch (err) {
+      console.error(err);
+      showToast(`Failed to audit ${lang}: ` + err.message);
+    }
+  };
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -641,7 +744,7 @@ const DashboardReact = () => {
           'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
         },
         body: JSON.stringify({
-          model: 'llama-3.1-8b-instant',
+          model: 'groq/compound-mini',
           messages: [
             { role: 'system', content: 'You are a helpful UX and accessibility auditor AI assistant. Keep your responses concise, helpful, and formatted in markdown.' },
             ...newMessages.map(m => ({ role: m.sender === 'ai' ? 'assistant' : 'user', content: m.text }))
@@ -912,6 +1015,81 @@ return (
         <RepoAudit audit={whiteboxAudit} setAudit={setWhiteboxAudit} isTokenConnected={isTokenConnected} onOpenGithubModal={() => setShowGithubModal(true)} />
       ) : (
         <>
+          {/* MULTILINGUAL LANGUAGE SWITCHER TABS */}
+          {(detectedLanguages.length > 0 || Object.keys(multilingualAudits).length > 1) && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '20px',
+              background: isDarkMode ? '#1e293b' : '#f8fafc',
+              padding: '12px 18px',
+              borderRadius: '12px',
+              border: '1px solid var(--border-light)',
+              flexWrap: 'wrap',
+              gap: '12px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-secondary)', marginRight: '4px' }}>
+                  Audited Language:
+                </span>
+                {['en', ...new Set([...Object.keys(multilingualAudits), ...detectedLanguages.map(d => d.lang)])].filter(l => l === 'en' || multilingualAudits[l] || detectedLanguages.some(d => d.lang === l)).map((l) => {
+                  const isCurrent = selectedLang === l;
+                  const isDone = !!multilingualAudits[l];
+                  const labels = {
+                    en: '🌐 English (Default)',
+                    hi: '🇮🇳 हिन्दी (Hindi)',
+                    mr: '🇮🇳 मराठी (Marathi)',
+                    ta: '🇮🇳 தமிழ் (Tamil)',
+                  };
+                  const detected = detectedLanguages.find(d => d.lang === l);
+
+                  return (
+                    <button
+                      key={l}
+                      type="button"
+                      onClick={() => handleSwitchLanguage(l)}
+                      className={`btn btn-xs ${isCurrent ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{
+                        padding: '7px 14px',
+                        borderRadius: '6px',
+                        fontSize: '12.5px',
+                        fontWeight: isCurrent ? '700' : '500',
+                        border: isCurrent ? '1px solid #3b82f6' : '1px solid var(--border-light)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span>{labels[l] || `${detected?.nativeName || l} (${detected?.label || l.toUpperCase()})`}</span>
+                      {isDone && <span style={{ fontSize: '11px', color: isCurrent ? '#fff' : 'var(--green)' }}>✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {detectedLanguages.some(d => !multilingualAudits[d.lang]) && (
+                <button
+                  type="button"
+                  onClick={() => setShowMultilingualPrompt(true)}
+                  className="btn btn-xs btn-primary"
+                  style={{
+                    background: 'linear-gradient(135deg, #2563eb, #7c3aed)',
+                    color: '#fff',
+                    border: 'none',
+                    fontWeight: '600',
+                    padding: '7px 16px',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ⚡ Audit Detected Languages ({detectedLanguages.filter(d => !multilingualAudits[d.lang]).map(d => d.label).join(', ')})
+                </button>
+              )}
+            </div>
+          )}
+
           {/* AUDIT HERO */}
       <div className="audit-hero">
         <div className="audit-screenshot">
@@ -1006,6 +1184,17 @@ return (
           <div style={{"fontSize":"12px","color":"var(--text-secondary)","marginTop":"2px"}}>WCAG 2.1 AA standard</div>
         </div>
       </div>
+
+      {/* LANGUAGE COMPARISON SECTION */}
+      {(detectedLanguages.length > 0 || Object.keys(multilingualAudits).length > 1) && (
+        <LanguageComparison
+          comparisonData={comparisonData}
+          currentLang={selectedLang}
+          detectedLanguages={detectedLanguages}
+          onSelectLanguage={handleSwitchLanguage}
+          onAuditLanguage={handleAuditSingleLanguage}
+        />
+      )}
 
       {/* CHARTS + TIMELINE */}
       <div className="grid-2" style={{"marginBottom":"20px"}}>
@@ -2062,6 +2251,29 @@ return (
         setIsTokenConnected(true);
         showToast('GitHub connected successfully');
       }} 
+    />
+
+    <MultilingualPromptModal 
+      isOpen={showMultilingualPrompt}
+      parentAuditId={currentAuditId}
+      detectedLanguages={detectedLanguages}
+      onProceed={(selected) => {
+        setShowMultilingualPrompt(false);
+        showToast(`Auditing ${selected.map(s => s.toUpperCase()).join(', ')}...`);
+        setTimeout(() => {
+          fetchMultilingualAudit(currentAuditId).then(res => {
+            if (res.comparison) setComparisonData(res.comparison);
+            if (res.languages) {
+              const childMap = {};
+              for (const [lang, doc] of Object.entries(res.languages)) {
+                childMap[lang] = adaptCicaadaReport(doc);
+              }
+              setMultilingualAudits(prev => ({ ...prev, ...childMap }));
+            }
+          });
+        }, 5000);
+      }}
+      onSkip={() => setShowMultilingualPrompt(false)}
     />
     </>
   );
